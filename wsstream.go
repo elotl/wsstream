@@ -42,13 +42,29 @@ type WebsocketParams struct {
 }
 
 type WSStream struct {
-	closed       chan struct{}
-	readChans    map[uint32]chan []byte
-	writeChan    chan []byte
-	exitCodeChan chan uint32
+	// The reader will close(closed), that's how we detect the
+	// connection has been shut down
+	closed chan struct{}
+	// If we want to close this from the server side, we fire
+	// a message into closeMsgChan, that'll write a close
+	// message from the write loop
 	closeMsgChan chan struct{}
-	params       WebsocketParams
-	conn         *websocket.Conn
+	// writeChan is used internally to pump messages to the write
+	// loop, this ensures we only write from one goroutine (writing is
+	// not threadsafe).
+	writeChan chan []byte
+	// readChans are the 3 channels the user can read from.  The idea
+	// is that those can be used to carry stdin, stdout and stderr
+	// messages.  But it's up to the users of the library for how to
+	// interpret the channels.
+	readChans map[uint32]chan []byte
+	// If an exit code message comes through, it'll be placed into
+	// exitCodeChan
+	exitCodeChan chan uint32
+	// Websocket parameters
+	params WebsocketParams
+	// The underlying gorilla websocket object
+	conn *websocket.Conn
 }
 
 func NewWSStream(conn *websocket.Conn) *WSStream {
@@ -88,6 +104,7 @@ func (ws *WSStream) CloseAndCleanup() error {
 		// if we've already closed the conn then dont' try to write on
 		// the conn.
 	default:
+		//
 		ws.closeMsgChan <- struct{}{}
 		<-ws.closeMsgChan
 	}

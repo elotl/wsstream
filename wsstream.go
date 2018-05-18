@@ -1,4 +1,10 @@
-package plug
+// Design notes: This package was originally designed to have 3
+// channels for reading that represented stdin, stdout, stderr, also a
+// channel that contained the exit code.  We don't actually use that
+// anywhere in the product.  In this implementation we just pass data
+// through to gRPC so just pass on the raw json and let the other side
+// figure it out.
+package wsstream
 
 import (
 	"encoding/json"
@@ -10,7 +16,7 @@ import (
 )
 
 const (
-	bytesProtocol = "milpa.bytes"
+	BytesProtocol = "milpa.bytes"
 )
 
 var (
@@ -53,14 +59,9 @@ type WSStream struct {
 	// loop, this ensures we only write from one goroutine (writing is
 	// not threadsafe).
 	writeChan chan []byte
-	// readChans are the 3 channels the user can read from.  The idea
-	// is that those can be used to carry stdin, stdout and stderr
-	// messages.  But it's up to the users of the library for how to
-	// interpret the channels.
-	readChans map[uint32]chan []byte
-	// If an exit code message comes through, it'll be placed into
-	// exitCodeChan
-	exitCodeChan chan uint32
+	// We write the received messages to readRawChan,
+	// standard readChans are nil.
+	readChan chan []byte
 	// Websocket parameters
 	params WebsocketParams
 	// The underlying gorilla websocket object
@@ -69,14 +70,9 @@ type WSStream struct {
 
 func NewWSStream(conn *websocket.Conn) *WSStream {
 	ws := &WSStream{
-		closed: make(chan struct{}),
-		readChans: map[uint32]chan []byte{
-			uint32(0): make(chan []byte, wsBufSize),
-			uint32(1): make(chan []byte, wsBufSize),
-			uint32(2): make(chan []byte, wsBufSize),
-		},
+		readChan:     make(chan []byte, wsBufSize),
+		closed:       make(chan struct{}),
 		writeChan:    make(chan []byte, wsBufSize),
-		exitCodeChan: make(chan uint32, 1),
 		closeMsgChan: make(chan struct{}),
 		params: WebsocketParams{
 			writeWait:  10 * time.Second,
@@ -104,7 +100,9 @@ func (ws *WSStream) CloseAndCleanup() error {
 		// if we've already closed the conn then dont' try to write on
 		// the conn.
 	default:
-		//
+		// If we haven't already closed the connection (ws.closed),
+		// then write a closed message, wait for it to be sent and
+		// then close the underlying connection
 		ws.closeMsgChan <- struct{}{}
 		<-ws.closeMsgChan
 	}
@@ -115,24 +113,29 @@ func (ws *WSStream) CloseAndCleanup() error {
 	return ws.conn.Close()
 }
 
-func (ws *WSStream) ReadChan(channel int) <-chan []byte {
-	return ws.readChans[uint32(channel)]
+func (ws *WSStream) Read() <-chan []byte {
+	return ws.readChan
 }
 
-func (ws *WSStream) ExitCode() <-chan uint32 {
-	return ws.exitCodeChan
+func (ws *WSStream) WriteMsg(channel int, msg []byte) error {
+	return ws.write(FrameTypeMessage, channel, msg, uint32(0))
 }
 
-func (ws *WSStream) Write(channel int, msg []byte) error {
+func (ws *WSStream) WriteExit(code uint32) error {
+	return ws.write(FrameTypeExitCode, 0, nil, code)
+}
+
+func (ws *WSStream) write(frameType FrameType, channel int, msg []byte, code uint32) error {
 	select {
 	case <-ws.closed:
 		return fmt.Errorf("Cannot write to a closed websocket")
 	default:
 		f := Frame{
-			Protocol: "milpa.bytes",
-			Type:     FrameTypeMessage,
+			Protocol: BytesProtocol,
+			Type:     frameType,
 			Channel:  uint32(channel),
 			Message:  msg,
+			ExitCode: code,
 		}
 		b, err := json.Marshal(f)
 		if err != nil {
@@ -161,29 +164,7 @@ func (ws *WSStream) StartReader() {
 			close(ws.closed)
 			return
 		}
-		f := Frame{}
-		err = json.Unmarshal(msg, &f)
-		if err != nil {
-			fmt.Println("Corrupted message", err)
-			continue
-		}
-		if f.Type == FrameTypeMessage {
-			c, exists := ws.readChans[f.Channel]
-			if !exists {
-				fmt.Println(
-					"Websocket reader recieved a message on unknown channel",
-					f.Channel)
-				continue
-			}
-			c <- f.Message
-		} else if f.Type == FrameTypeExitCode {
-			fmt.Println("Exit code:", f.ExitCode)
-			ws.exitCodeChan <- f.ExitCode
-			// Todo, not sure if we should exit here...
-		} else {
-			fmt.Println("Unknown websocket frame type:", f.Type)
-			continue
-		}
+		ws.readChan <- msg
 	}
 }
 
@@ -202,7 +183,6 @@ func (ws *WSStream) StartWriteLoop() {
 				fmt.Println("error writing")
 			}
 		case <-ws.closeMsgChan:
-			fmt.Println("Writing close")
 			_ = ws.conn.WriteMessage(websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			ws.closeMsgChan <- struct{}{}

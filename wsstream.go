@@ -9,9 +9,9 @@ package wsstream
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
+	"github.com/golang/glog"
 	"github.com/gorilla/websocket"
 )
 
@@ -147,7 +147,6 @@ func (ws *WSStream) write(frameType FrameType, channel int, msg []byte, code uin
 }
 
 func (ws *WSStream) StartReader() {
-	defer fmt.Println("Exiting read loop")
 	ws.conn.SetReadDeadline(time.Now().Add(ws.params.pongWait))
 	ws.conn.SetPongHandler(func(string) error {
 		ws.conn.SetReadDeadline(time.Now().Add(ws.params.pongWait))
@@ -156,10 +155,8 @@ func (ws *WSStream) StartReader() {
 	for {
 		_, msg, err := ws.conn.ReadMessage()
 		if err != nil {
-			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-				log.Println("cleaning closing connection")
-			} else {
-				log.Println("Closing connection after error:", err)
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				glog.Errorln("Closing connection after error:", err)
 			}
 			close(ws.closed)
 			return
@@ -171,7 +168,6 @@ func (ws *WSStream) StartReader() {
 func (ws *WSStream) StartWriteLoop() {
 	pingTicker := time.NewTicker(ws.params.pingPeriod)
 	defer pingTicker.Stop()
-	defer fmt.Println("Exiting write loop")
 	for {
 		select {
 		case <-ws.closed:
@@ -180,7 +176,7 @@ func (ws *WSStream) StartWriteLoop() {
 			_ = ws.conn.SetWriteDeadline(time.Now().Add(ws.params.writeWait))
 			err := ws.conn.WriteMessage(websocket.TextMessage, msg)
 			if err != nil {
-				fmt.Println("error writing")
+				glog.Errorln("Error writing msg:", err)
 			}
 		case <-ws.closeMsgChan:
 			_ = ws.conn.WriteMessage(websocket.CloseMessage,
@@ -190,10 +186,8 @@ func (ws *WSStream) StartWriteLoop() {
 			_ = ws.conn.SetWriteDeadline(time.Now().Add(ws.params.writeWait))
 			err := ws.conn.WriteMessage(websocket.PingMessage, []byte{})
 			if err != nil {
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-					fmt.Println("closing ping loop, successfully")
-				} else {
-					fmt.Println("error in ping loop, exiting")
+				if !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+					glog.Errorln("Abnormal error in ping loop:", err)
 				}
 				return
 			}

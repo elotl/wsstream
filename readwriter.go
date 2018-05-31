@@ -2,7 +2,6 @@ package wsstream
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 
 	"github.com/golang/glog"
@@ -54,13 +53,11 @@ func (ws *WSReadWriter) RunDispatch() {
 		case <-ws.Closed():
 			return
 		case msg := <-ws.ReadMsg():
-			f := Frame{}
-			err := json.Unmarshal(msg, &f)
+			c, msg, err := UnpackMessage(msg)
 			if err != nil {
-				glog.Errorf("Corrupted message: %v", err)
-				continue
+				glog.Errorf("Error unpacking websocket msg: %v", err)
 			}
-			ws.doDispatch(int(f.Channel), f.Message)
+			ws.doDispatch(c, msg)
 		}
 	}
 }
@@ -89,7 +86,7 @@ func (r *WSReader) Read(p []byte) (n int, err error) {
 	select {
 	case <-r.closed:
 		// drain the read channel.  Not sure if we need to do this
-		// anymore now that we're no longer buffering channels
+		// anymore now that we're no longer buffering channels...
 		select {
 		case msg := <-r.msgChan:
 			numCopied := copy(p, msg)

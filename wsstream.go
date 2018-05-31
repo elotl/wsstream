@@ -7,7 +7,7 @@
 package wsstream
 
 import (
-	"encoding/json"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"strings"
@@ -17,32 +17,18 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const (
-	// Our Messages are []byte so they're base64 encoded by Marshal...
-	BytesProtocol = "milpa.bytes"
-)
-
 var (
 	wsBufSize = 0
 )
 
-type FrameType string
-
 const (
-	FrameTypeMessage  FrameType = "Message"
-	FrameTypeExitCode FrameType = "ExitCode"
-	StdinChan         int       = 0
-	StdoutChan        int       = 1
-	StderrChan        int       = 2
+	StdinChan    int = 0
+	StdoutChan   int = 1
+	StderrChan   int = 2
+	ExitCodeChan int = 3
 )
 
-type Frame struct {
-	Protocol string    `json:"protocol"`
-	Type     FrameType `json:"type"`
-	Channel  uint32    `json:"channel"`
-	Message  []byte    `json:"message"`
-	ExitCode uint32    `json:"exitCode"`
-}
+type MessageFrame []byte
 
 type WebsocketParams struct {
 	// Time allowed to write the file to the client.
@@ -125,7 +111,7 @@ func (ws *WSStream) ReadMsg() <-chan []byte {
 }
 
 func (ws *WSStream) WriteMsg(channel int, msg []byte) error {
-	return ws.write(FrameTypeMessage, channel, msg, uint32(0))
+	return ws.write(channel, msg)
 }
 
 func (ws *WSStream) WriteRaw(framedMsg []byte) error {
@@ -138,33 +124,27 @@ func (ws *WSStream) WriteRaw(framedMsg []byte) error {
 	}
 }
 
-func (ws *WSStream) WriteExit(code uint32) error {
-	return ws.write(FrameTypeExitCode, 0, nil, code)
+func UnpackMessage(frame []byte) (int, []byte, error) {
+	if len(frame) == 0 {
+		return 0, []byte(""), nil
+	}
+	channel := frame[0] - '0'
+	msg, err := base64.StdEncoding.DecodeString(string(frame[1:]))
+	return int(channel), msg, err
 }
 
-func UnpackMessage(msg []byte) (Frame, error) {
-	f := Frame{}
-	err := json.Unmarshal(msg, &f)
-	return f, err
+func PackMessage(channel int, data []byte) []byte {
+	frame := string('0'+channel) + base64.StdEncoding.EncodeToString(data)
+	return []byte(frame)
 }
 
-func (ws *WSStream) write(frameType FrameType, channel int, msg []byte, code uint32) error {
+func (ws *WSStream) write(channel int, msg []byte) error {
 	select {
 	case <-ws.closed:
 		return io.EOF
 	default:
-		f := Frame{
-			Protocol: BytesProtocol,
-			Type:     frameType,
-			Channel:  uint32(channel),
-			Message:  msg,
-			ExitCode: code,
-		}
-		b, err := json.Marshal(f)
-		if err != nil {
-			return err
-		}
-		ws.writeChan <- b
+		f := PackMessage(channel, msg)
+		ws.writeChan <- f
 	}
 	return nil
 }

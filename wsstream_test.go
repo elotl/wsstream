@@ -1,7 +1,6 @@
 package wsstream
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -20,27 +19,13 @@ const (
 	stderrMsg = "stderrMsg"
 )
 
-func unpackMsg(msg []byte) (uint32, string, error) {
-	f := Frame{}
-	err := json.Unmarshal(msg, &f)
-	if err != nil {
-		return 0, "", fmt.Errorf("Corrupted message: %s", err)
-	}
-
-	if f.Type == FrameTypeMessage {
-		return f.Channel, string(f.Message), nil
-	} else {
-		err := fmt.Errorf("Unexpected websocket frame type: %s", f.Type)
-		return 0, "", err
-	}
-}
-
-func readChanTimeout(c <-chan []byte, t time.Duration) (uint32, string, error) {
+func readChanTimeout(c <-chan []byte, t time.Duration) (int, string, error) {
 	select {
-	case m := <-c:
-		return unpackMsg(m)
+	case f := <-c:
+		c, m, err := UnpackMessage(f)
+		return c, string(m), err
 	case <-time.After(t):
-		return uint32(0), "", fmt.Errorf("timeout")
+		return 0, "", fmt.Errorf("timeout")
 	}
 }
 
@@ -65,13 +50,13 @@ func makeWSHandler(t *testing.T) func(http.ResponseWriter, *http.Request) {
 func runServer(t *testing.T, conn *websocket.Conn) {
 	ws := NewWSStream(conn)
 	defer ws.CloseAndCleanup()
-	c, val, err := readChanTimeout(ws.Read(), 3*time.Second)
+	c, val, err := readChanTimeout(ws.ReadMsg(), 3*time.Second)
 	assert.NoError(t, err)
-	assert.Equal(t, uint32(0), c)
+	assert.Equal(t, StdinChan, c)
 	assert.Equal(t, stdinMsg, val)
-	err = ws.WriteMsg(1, []byte(stdoutMsg))
+	err = ws.WriteMsg(StdoutChan, []byte(stdoutMsg))
 	assert.NoError(t, err)
-	err = ws.WriteMsg(2, []byte(stderrMsg))
+	err = ws.WriteMsg(StderrChan, []byte(stderrMsg))
 	assert.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
 }
@@ -79,15 +64,15 @@ func runServer(t *testing.T, conn *websocket.Conn) {
 func runClient(t *testing.T, conn *websocket.Conn) {
 	wsc := NewWSStream(conn)
 	defer wsc.CloseAndCleanup()
-	err := wsc.WriteMsg(0, []byte(stdinMsg))
+	err := wsc.WriteMsg(StdinChan, []byte(stdinMsg))
 	assert.NoError(t, err)
-	c, val, err := readChanTimeout(wsc.Read(), 3*time.Second)
+	c, val, err := readChanTimeout(wsc.ReadMsg(), 3*time.Second)
 	assert.NoError(t, err)
-	assert.Equal(t, uint32(1), c)
+	assert.Equal(t, StdoutChan, c)
 	assert.Equal(t, stdoutMsg, val)
-	c, val, err = readChanTimeout(wsc.Read(), 3*time.Second)
+	c, val, err = readChanTimeout(wsc.ReadMsg(), 3*time.Second)
 	assert.NoError(t, err)
-	assert.Equal(t, uint32(2), c)
+	assert.Equal(t, StderrChan, c)
 	assert.Equal(t, stderrMsg, string(val))
 	time.Sleep(150 * time.Millisecond)
 }

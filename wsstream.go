@@ -9,6 +9,8 @@ package wsstream
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	"github.com/golang/glog"
@@ -16,11 +18,12 @@ import (
 )
 
 const (
+	// Our Messages are []byte so they're base64 encoded by Marshal...
 	BytesProtocol = "milpa.bytes"
 )
 
 var (
-	wsBufSize = 1000
+	wsBufSize = 0
 )
 
 type FrameType string
@@ -28,6 +31,9 @@ type FrameType string
 const (
 	FrameTypeMessage  FrameType = "Message"
 	FrameTypeExitCode FrameType = "ExitCode"
+	StdinChan         int       = 0
+	StdoutChan        int       = 1
+	StderrChan        int       = 2
 )
 
 type Frame struct {
@@ -99,6 +105,7 @@ func (ws *WSStream) CloseAndCleanup() error {
 	case <-ws.closed:
 		// if we've already closed the conn then dont' try to write on
 		// the conn.
+		return io.EOF
 	default:
 		// If we haven't already closed the connection (ws.closed),
 		// then write a closed message, wait for it to be sent and
@@ -113,7 +120,7 @@ func (ws *WSStream) CloseAndCleanup() error {
 	return ws.conn.Close()
 }
 
-func (ws *WSStream) Read() <-chan []byte {
+func (ws *WSStream) ReadMsg() <-chan []byte {
 	return ws.readChan
 }
 
@@ -121,14 +128,30 @@ func (ws *WSStream) WriteMsg(channel int, msg []byte) error {
 	return ws.write(FrameTypeMessage, channel, msg, uint32(0))
 }
 
+func (ws *WSStream) WriteRaw(framedMsg []byte) error {
+	select {
+	case <-ws.closed:
+		return io.EOF
+	default:
+		ws.writeChan <- framedMsg
+		return nil
+	}
+}
+
 func (ws *WSStream) WriteExit(code uint32) error {
 	return ws.write(FrameTypeExitCode, 0, nil, code)
+}
+
+func UnpackMessage(msg []byte) (Frame, error) {
+	f := Frame{}
+	err := json.Unmarshal(msg, &f)
+	return f, err
 }
 
 func (ws *WSStream) write(frameType FrameType, channel int, msg []byte, code uint32) error {
 	select {
 	case <-ws.closed:
-		return fmt.Errorf("Cannot write to a closed websocket")
+		return io.EOF
 	default:
 		f := Frame{
 			Protocol: BytesProtocol,
@@ -155,8 +178,10 @@ func (ws *WSStream) StartReader() {
 	for {
 		_, msg, err := ws.conn.ReadMessage()
 		if err != nil {
-			if !websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+			if !websocket.IsCloseError(err, websocket.CloseNormalClosure) &&
+				!strings.Contains(err.Error(), "closed network connection") {
 				glog.Errorln("Closing connection after error:", err)
+				fmt.Printf("%#v\n", err)
 			}
 			close(ws.closed)
 			return

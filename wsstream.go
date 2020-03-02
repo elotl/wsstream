@@ -1,9 +1,7 @@
 // Design notes: This package was originally designed to have 3
 // channels for reading that represented stdin, stdout, stderr, also a
-// channel that contained the exit code.  We don't actually use that
-// anywhere in the product.  In this implementation we just pass data
-// through to gRPC so just pass on the raw json and let the other side
-// figure it out.
+// channel that contained the exit code.  Additional channels can be
+// created by the user.
 package wsstream
 
 import (
@@ -82,7 +80,7 @@ func (ws *WSStream) Closed() <-chan struct{} {
 	return ws.closed
 }
 
-// CloseAndCleanup must be called.  Should be called by the user of
+// CloseAndCleanup MUST be called.  Should be called by the user of
 // the stream in response to hearing about the close from selecting on
 // Closed().  Should only be called once but MUST be called by the
 // user of the WSStream or else we'll leak the open WS connection.
